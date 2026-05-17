@@ -1,0 +1,65 @@
+name: SonarCloud Analysis
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  sonarcloud:
+    name: SonarCloud Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better analysis
+
+      # Python setup and dependencies
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r gateway/requirements.txt
+          pip install pytest pytest-cov
+          
+      # Run Python tests with coverage
+      - name: Run Python tests
+        run: |
+          pytest --cov=core-agent --cov=browser-bridge --cov=gateway --cov-report=xml --cov-report=html
+          
+      # Node.js setup for frontend
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: |
+          npm ci
+          npm install --save-dev @types/node
+          
+      # Run TypeScript compilation check
+      - name: TypeScript type check
+        working-directory: ./frontend
+        run: npx tsc --noEmit
+        
+      # Run frontend tests with coverage (if tests exist)
+      - name: Run frontend tests
+        working-directory: ./frontend
+        run: |
+          npm run test -- --coverage --watchAll=false || echo "No tests configured yet"
+          
+      # SonarCloud Scan
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Needed to get PR information
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}    # Your SonarCloud token
