@@ -1,0 +1,17 @@
+name: Quality Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  quality-gate:
+    name: SonarCloud Quality Gate
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Wait for SonarCloud analysis
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
