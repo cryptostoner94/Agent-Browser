@@ -1,0 +1,74 @@
+name: nexusos-ultra
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexusos-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexus}
+      POSTGRES_DB: ${POSTGRES_DB:-nexusos}
+    ports:
+      - "54329:5432"
+    volumes:
+      - nexusos_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexus} -d ${POSTGRES_DB:-nexusos}"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+
+  openclaw-gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    container_name: nexusos-openclaw-gateway
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://nexus:nexus@postgres:5432/nexusos}
+      LOCAL_MAC_MOUNT: /workspace/local_mac_system
+      ICLOUD_DRIVE_MOUNT: /workspace/icloud_drive
+      NEXUS_LOG_DIR: /app/runtime/logs
+      NEXUS_PATCH_DIR: /app/runtime/patches
+      NEXUS_EXPORT_DIR: /app/runtime/exports
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./core-agent:/app/core-agent:rw
+      - ./browser-bridge:/app/browser-bridge:rw
+      - ./runtime:/app/runtime:rw
+      - "/Users/${USER}:/workspace/local_mac_system:rw"
+      - "/Users/${USER}/Library/Mobile Documents/com~apple~CloudDocs:/workspace/icloud_drive:rw"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/health', timeout=3).read()\""]
+      interval: 20s
+      timeout: 5s
+      retries: 8
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: nexusos-frontend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NEXT_PUBLIC_GATEWAY_URL: ${NEXT_PUBLIC_GATEWAY_URL:-http://localhost:8088}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8088/ws/events}
+      NEXT_PUBLIC_VNC_URL: ${NEXT_PUBLIC_VNC_URL:-}
+      NEXT_PUBLIC_BROWSER_STREAM_URL: ${NEXT_PUBLIC_BROWSER_STREAM_URL:-}
+    ports:
+      - "3000:3000"
+    depends_on:
+      openclaw-gateway:
+        condition: service_healthy
+
+volumes:
+  nexusos_pg_data:
