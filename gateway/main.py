@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 import sys
 import time
 import traceback
@@ -11,8 +12,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 PROJECT_ROOT = Path(os.getenv("NEXUS_PROJECT_ROOT", "/app")).resolve()
@@ -36,13 +38,21 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 GATEWAY_LOG = LOG_DIR / "gateway.log"
 
 app = FastAPI(title="NexusOS-Ultra Gateway", version="1.0.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+GATEWAY_TOKEN = os.getenv("NEXUS_GATEWAY_TOKEN", "").strip()
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "NEXUS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if origin.strip()
+]
+ALLOWED_HOSTS = {
+    host.strip().lower()
+    for host in os.getenv("NEXUS_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1],::1").split(",")
+    if host.strip()
+}
+PUBLIC_PATHS = {"/health"}
 
 mesh = MacFilesystemMesh()
 router = NexusLLMRouter()
@@ -86,6 +96,53 @@ def log_event(event: str, payload: Dict[str, Any]) -> None:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def header_token(headers: Any) -> str:
+    authorization = str(headers.get("authorization", "") or "")
+    scheme, _, value = authorization.partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        return value.strip()
+    return str(headers.get("x-gateway-token", "") or "").strip()
+
+
+def token_accepted(candidate: str) -> bool:
+    if not GATEWAY_TOKEN:
+        return False
+    return secrets.compare_digest(candidate.encode("utf-8"), GATEWAY_TOKEN.encode("utf-8"))
+
+
+def host_allowed(host_header: str) -> bool:
+    host = (host_header or "").strip().lower()
+    if not host:
+        return False
+    hostname = host.split("]")[0] + "]" if host.startswith("[") else host.split(":")[0]
+    return hostname in ALLOWED_HOSTS
+
+
+@app.middleware("http")
+async def enforce_access_control(request: Request, call_next: Any) -> Any:
+    if request.method == "OPTIONS" or request.url.path in PUBLIC_PATHS:
+        return await call_next(request)
+    if not host_allowed(request.headers.get("host", "")):
+        log_event("access_denied", {"reason": "host", "path": request.url.path})
+        return JSONResponse(status_code=400, content={"detail": "unexpected Host header"})
+    if not GATEWAY_TOKEN:
+        log_event("access_denied", {"reason": "token_not_configured", "path": request.url.path})
+        return JSONResponse(status_code=503, content={"detail": "gateway token is not configured"})
+    if not token_accepted(header_token(request.headers)):
+        log_event("access_denied", {"reason": "token", "path": request.url.path})
+        return JSONResponse(status_code=401, content={"detail": "missing or invalid gateway token"})
+    return await call_next(request)
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Gateway-Token"],
+)
+
+
 def public_metrics() -> Dict[str, Any]:
     usage = router.usage_snapshot()
     prompt_tokens = sum(item.get("prompt_tokens_estimate", 0) for item in usage.values())
@@ -113,12 +170,7 @@ def public_metrics() -> Dict[str, Any]:
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
-    return {
-        "ok": True,
-        "service": "nexusos-ultra-gateway",
-        "started_at": APP_STARTED_AT,
-        "metrics": public_metrics(),
-    }
+    return {"ok": True, "service": "nexusos-ultra-gateway", "started_at": APP_STARTED_AT}
 
 
 @app.get("/api/metrics")
@@ -218,6 +270,13 @@ async def logs(limit: int = 100) -> Dict[str, Any]:
 
 @app.websocket("/ws/events")
 async def ws_events(websocket: WebSocket) -> None:
+    candidate = str(websocket.query_params.get("token", "") or "").strip()
+    if not host_allowed(websocket.headers.get("host", "")) or not token_accepted(
+        candidate or header_token(websocket.headers)
+    ):
+        log_event("access_denied", {"reason": "token", "path": "/ws/events"})
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     try:
         while True:
