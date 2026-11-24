@@ -64,6 +64,16 @@ type PatchEvent = {
 const gatewayUrl = process.env.NEXT_PUBLIC_GATEWAY_URL || "http://localhost:8088";
 const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8088/ws/events";
 const browserStreamUrl = process.env.NEXT_PUBLIC_BROWSER_STREAM_URL || process.env.NEXT_PUBLIC_VNC_URL || "";
+const gatewayToken = process.env.NEXT_PUBLIC_GATEWAY_TOKEN || "";
+
+function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return gatewayToken ? { ...extra, "X-Gateway-Token": gatewayToken } : extra;
+}
+
+function authenticatedWsUrl(base: string): string {
+  if (!gatewayToken) return base;
+  return `${base}${base.includes("?") ? "&" : "?"}token=${encodeURIComponent(gatewayToken)}`;
+}
 
 function formatBytes(bytes: number) {
   if (!Number.isFinite(bytes)) return "0 B";
@@ -83,7 +93,7 @@ function formatTime(epochSeconds: number) {
 }
 
 async function apiGet<T>(path: string): Promise<T> {
-  const response = await fetch(`${gatewayUrl}${path}`, { cache: "no-store" });
+  const response = await fetch(`${gatewayUrl}${path}`, { cache: "no-store", headers: authHeaders() });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -93,7 +103,7 @@ async function apiGet<T>(path: string): Promise<T> {
 async function apiPost<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${gatewayUrl}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body)
   });
   if (!response.ok) {
@@ -203,7 +213,7 @@ export default function Page() {
   }, [refreshAll]);
 
   useEffect(() => {
-    const socket = new WebSocket(wsUrl);
+    const socket = new WebSocket(authenticatedWsUrl(wsUrl));
     socket.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);

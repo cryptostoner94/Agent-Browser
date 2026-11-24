@@ -35,6 +35,7 @@ REQUIRED_FILES = [
     "frontend/src/components/ui/button.tsx",
     "frontend/src/components/ui/badge.tsx",
     "frontend/src/lib/utils.ts",
+    "scripts/check_gateway_gate.py",
 ]
 
 FORBIDDEN_MARKERS = [
@@ -88,6 +89,7 @@ def main() -> None:
         "browser-bridge/skyvern_client.py",
         "gateway/main.py",
         "scripts/validate_stack.py",
+        "scripts/check_gateway_gate.py",
     ]:
         path = ROOT / rel
         try:
@@ -117,6 +119,31 @@ def main() -> None:
     ]:
         if mount not in compose:
             fail(f"docker-compose missing mount: {mount}")
+
+    gateway_source = (ROOT / "gateway" / "main.py").read_text()
+    required_gateway_terms = [
+        "NEXUS_GATEWAY_TOKEN",
+        "enforce_access_control",
+        "secrets.compare_digest",
+        "x-gateway-token",
+        "ALLOWED_HOSTS",
+        "ALLOWED_ORIGINS",
+    ]
+    gate_absent = [term for term in required_gateway_terms if term not in gateway_source]
+    if gate_absent:
+        fail("gateway access control is incomplete: " + ", ".join(gate_absent))
+    if 'allow_origins=["*"]' in gateway_source:
+        fail("gateway must not allow every CORS origin")
+
+    if "127.0.0.1:8088:8088" not in compose:
+        fail("docker-compose must publish the gateway on the loopback address only")
+    if "127.0.0.1:3000:3000" not in compose:
+        fail("docker-compose must publish the dashboard on the loopback address only")
+    if "NEXUS_GATEWAY_TOKEN" not in (ROOT / ".env.example").read_text():
+        fail(".env.example must declare NEXUS_GATEWAY_TOKEN")
+    for term in ["X-Gateway-Token", "authenticatedWsUrl"]:
+        if term not in page:
+            fail(f"frontend page must send the gateway token: missing {term}")
 
     print("NexusOS-Ultra validation passed.")
 

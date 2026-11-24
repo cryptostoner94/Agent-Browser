@@ -47,6 +47,8 @@ Docker can only bind-mount folders macOS allows it to read.
 ```bash
 cd nexusos-ultra
 cp .env.example .env
+openssl rand -hex 32
+# Paste the value into NEXUS_GATEWAY_TOKEN in .env
 docker compose up --build
 ```
 
@@ -54,6 +56,27 @@ Open:
 
 - Dashboard: `http://localhost:3000`
 - Gateway health: `http://localhost:8088/health`
+
+The compose file refuses to start without `NEXUS_GATEWAY_TOKEN`, and the gateway answers `503` on every protected route until the value is set. Every published port binds to `127.0.0.1` only.
+
+## Access control
+
+The gateway holds the file mesh and the provider keys, so every route except `/health` needs the shared token from `NEXUS_GATEWAY_TOKEN`.
+
+- Send the token as `Authorization: Bearer <token>` or `X-Gateway-Token: <token>`.
+- The event socket takes the token as `ws://localhost:8088/ws/events?token=<token>`.
+- The gateway answers only the Host names in `NEXUS_ALLOWED_HOSTS`, and it answers browser origins only from `NEXUS_ALLOWED_ORIGINS`.
+- `/health` returns liveness only. Metrics, logs and file listings need the token.
+
+The dashboard reads the token from `NEXT_PUBLIC_GATEWAY_TOKEN` at build time, so it is part of the local bundle. Keep the ports on `127.0.0.1` and change the token after you expose a port.
+
+Check the gate with:
+
+```bash
+python3 scripts/check_gateway_gate.py
+curl http://localhost:8088/health
+curl -H "X-Gateway-Token: $NEXUS_GATEWAY_TOKEN" http://localhost:8088/api/metrics
+```
 
 ## Add API keys
 
@@ -133,6 +156,14 @@ ls "$HOME/Library/Mobile Documents/com~apple~CloudDocs"
 
 If it fails, open iCloud Drive once in Finder and make sure iCloud Drive is enabled in Apple ID settings.
 
+### Gateway answers 401 or 503
+
+`401` means the request has no token or a wrong token. `503` means `NEXUS_GATEWAY_TOKEN` is empty, so the gateway closed every route. Set the value in `.env` and rebuild the dashboard so its bundle carries the new token.
+
+### Gateway answers 400
+
+The request carried a Host name that `NEXUS_ALLOWED_HOSTS` does not list. Use `localhost` or `127.0.0.1`, or add the name you need.
+
 ### Dashboard cannot reach gateway
 
 Check:
@@ -153,6 +184,7 @@ Check:
 ```bash
 grep SKYVERN .env
 curl http://localhost:8088/health
+curl -H "X-Gateway-Token: $NEXUS_GATEWAY_TOKEN" http://localhost:8088/api/metrics
 ```
 
 The stack remains usable without Skyvern credentials, but live cloud browser execution needs a real key.
